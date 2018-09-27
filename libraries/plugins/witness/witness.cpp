@@ -1,28 +1,30 @@
 /*
  * Copyright (c) 2015 Cryptonomex, Inc., and contributors.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ * The MIT License
  *
- * 1. Any modified source or binaries are used only with the BitShares network.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * 2. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * 3. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 #include <graphene/witness/witness.hpp>
 
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/witness_object.hpp>
-#include <graphene/time/time.hpp>
 
 #include <graphene/utilities/key_conversion.hpp>
 
@@ -48,14 +50,13 @@ void new_chain_banner( const graphene::chain::database& db )
       "*                              *\n"
       "********************************\n"
       "\n";
-   if( db.get_slot_at_time( graphene::time::now() ) > 200 )
+   if( db.get_slot_at_time( fc::time_point::now() ) > 200 )
    {
       std::cerr << "Your genesis seems to have an old timestamp\n"
          "Please consider using the --genesis-timestamp option to give your genesis a recent timestamp\n"
          "\n"
          ;
    }
-   return;
 }
 
 void witness_plugin::plugin_set_program_options(
@@ -92,8 +93,8 @@ void witness_plugin::plugin_initialize(const boost::program_options::variables_m
       const std::vector<std::string> key_id_to_wif_pair_strings = options["private-key"].as<std::vector<std::string>>();
       for (const std::string& key_id_to_wif_pair_string : key_id_to_wif_pair_strings)
       {
-         auto key_id_to_wif_pair = graphene::app::dejsonify<std::pair<chain::public_key_type, std::string> >(key_id_to_wif_pair_string);
-         idump((key_id_to_wif_pair));
+         auto key_id_to_wif_pair = graphene::app::dejsonify<std::pair<chain::public_key_type, std::string> >(key_id_to_wif_pair_string, 5);
+         ilog("Public Key: ${public}", ("public", key_id_to_wif_pair.first));
          fc::optional<fc::ecc::private_key> private_key = graphene::utilities::wif_to_key(key_id_to_wif_pair.second);
          if (!private_key)
          {
@@ -101,7 +102,7 @@ void witness_plugin::plugin_initialize(const boost::program_options::variables_m
             // just here to ease the transition, can be removed soon
             try
             {
-               private_key = fc::variant(key_id_to_wif_pair.second).as<fc::ecc::private_key>();
+               private_key = fc::variant(key_id_to_wif_pair.second, 2).as<fc::ecc::private_key>(1);
             }
             catch (const fc::exception&)
             {
@@ -118,8 +119,6 @@ void witness_plugin::plugin_startup()
 { try {
    ilog("witness plugin:  plugin_startup() begin");
    chain::database& d = database();
-   //Start NTP time client
-   graphene::time::now();
 
    if( !_witnesses.empty() )
    {
@@ -139,25 +138,28 @@ void witness_plugin::plugin_startup()
 
 void witness_plugin::plugin_shutdown()
 {
-   graphene::time::shutdown_ntp_time();
-   return;
+   // nothing to do
 }
 
 void witness_plugin::schedule_production_loop()
 {
    //Schedule for the next second's tick regardless of chain state
-   // If we would wait less than 200ms, wait for the whole second.
-   fc::time_point now = graphene::time::now();
-   fc::time_point_sec next_second( now + fc::microseconds( 1200000 ) );
-   //wdump( (now.time_since_epoch().count())(next_second) );
+   // If we would wait less than 50ms, wait for the whole second.
+   fc::time_point now = fc::time_point::now();
+   int64_t time_to_next_second = 1000000 - (now.time_since_epoch().count() % 1000000);
+   if( time_to_next_second < 50000 )      // we must sleep for at least 50ms
+       time_to_next_second += 1000000;
+
+   fc::time_point next_wakeup( now + fc::microseconds( time_to_next_second ) );
+
    _block_production_task = fc::schedule([this]{block_production_loop();},
-                                         next_second, "Witness Block Production");
+                                         next_wakeup, "Witness Block Production");
 }
 
 block_production_condition::block_production_condition_enum witness_plugin::block_production_loop()
 {
    block_production_condition::block_production_condition_enum result;
-   fc::mutable_variant_object capture;
+   fc::limited_mutable_variant_object capture( GRAPHENE_MAX_NESTED_OBJECTS );
    try
    {
       result = maybe_produce_block(capture);
@@ -182,10 +184,8 @@ block_production_condition::block_production_condition_enum witness_plugin::bloc
          ilog("Not producing block because production is disabled until we receive a recent block (see: --enable-stale-production)");
          break;
       case block_production_condition::not_my_turn:
-         //ilog("Not producing block because it isn't my turn");
          break;
       case block_production_condition::not_time_yet:
-         // ilog("Not producing block because slot has not yet arrived");
          break;
       case block_production_condition::no_private_key:
          ilog("Not producing block because I don't have the private key for ${scheduled_key}", (capture) );
@@ -200,6 +200,7 @@ block_production_condition::block_production_condition_enum witness_plugin::bloc
          elog("Not producing block because the last block was generated by the same witness.\nThis node is probably disconnected from the network so block production has been disabled.\nDisable this check with --allow-consecutive option.");
          break;
       case block_production_condition::exception_producing_block:
+         elog( "exception producing block" );
          break;
    }
 
@@ -207,10 +208,10 @@ block_production_condition::block_production_condition_enum witness_plugin::bloc
    return result;
 }
 
-block_production_condition::block_production_condition_enum witness_plugin::maybe_produce_block( fc::mutable_variant_object& capture )
+block_production_condition::block_production_condition_enum witness_plugin::maybe_produce_block( fc::limited_mutable_variant_object& capture )
 {
    chain::database& db = database();
-   fc::time_point now_fine = graphene::time::now();
+   fc::time_point now_fine = fc::time_point::now();
    fc::time_point_sec now = now_fine + fc::microseconds( 500000 );
 
    // If the next block production opportunity is in the present or future, we're synced.

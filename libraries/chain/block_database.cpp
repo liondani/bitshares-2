@@ -1,22 +1,25 @@
 /*
  * Copyright (c) 2015 Cryptonomex, Inc., and contributors.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ * The MIT License
  *
- * 1. Any modified source or binaries are used only with the BitShares network.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * 2. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * 3. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 #include <graphene/chain/block_database.hpp>
 #include <graphene/chain/protocol/fee_schedule.hpp>
@@ -42,14 +45,15 @@ void block_database::open( const fc::path& dbdir )
    _block_num_to_pos.exceptions(std::ios_base::failbit | std::ios_base::badbit);
    _blocks.exceptions(std::ios_base::failbit | std::ios_base::badbit);
 
-   if( !fc::exists( dbdir/"index" ) )
+   _index_filename = dbdir / "index";
+   if( !fc::exists( _index_filename ) )
    {
-     _block_num_to_pos.open( (dbdir/"index").generic_string().c_str(), std::fstream::binary | std::fstream::in | std::fstream::out | std::fstream::trunc);
+     _block_num_to_pos.open( _index_filename.generic_string().c_str(), std::fstream::binary | std::fstream::in | std::fstream::out | std::fstream::trunc);
      _blocks.open( (dbdir/"blocks").generic_string().c_str(), std::fstream::binary | std::fstream::in | std::fstream::out | std::fstream::trunc);
    }
    else
    {
-     _block_num_to_pos.open( (dbdir/"index").generic_string().c_str(), std::fstream::binary | std::fstream::in | std::fstream::out );
+     _block_num_to_pos.open( _index_filename.generic_string().c_str(), std::fstream::binary | std::fstream::in | std::fstream::out );
      _blocks.open( (dbdir/"blocks").generic_string().c_str(), std::fstream::binary | std::fstream::in | std::fstream::out );
    }
 } FC_CAPTURE_AND_RETHROW( (dbdir) ) }
@@ -79,8 +83,7 @@ void block_database::store( const block_id_type& _id, const signed_block& b )
       id = b.id();
       elog( "id argument of block_database::store() was not initialized for block ${id}", ("id", id) );
    }
-   auto num = block_header::num_from_id(id);
-   _block_num_to_pos.seekp( sizeof( index_entry ) * num );
+   _block_num_to_pos.seekp( sizeof( index_entry ) * int64_t(block_header::num_from_id(id)) );
    index_entry e;
    _blocks.seekp( 0, _blocks.end );
    auto vec = fc::raw::pack( b );
@@ -94,7 +97,7 @@ void block_database::store( const block_id_type& _id, const signed_block& b )
 void block_database::remove( const block_id_type& id )
 { try {
    index_entry e;
-   auto index_pos = sizeof(e)*block_header::num_from_id(id);
+   int64_t index_pos = sizeof(e) * int64_t(block_header::num_from_id(id));
    _block_num_to_pos.seekg( 0, _block_num_to_pos.end );
    if ( _block_num_to_pos.tellg() <= index_pos )
       FC_THROW_EXCEPTION(fc::key_not_found_exception, "Block ${id} not contained in block database", ("id", id));
@@ -105,7 +108,7 @@ void block_database::remove( const block_id_type& id )
    if( e.block_id == id )
    {
       e.block_size = 0;
-      _block_num_to_pos.seekp( sizeof(e)*block_header::num_from_id(id) );
+      _block_num_to_pos.seekp( sizeof(e) * int64_t(block_header::num_from_id(id)) );
       _block_num_to_pos.write( (char*)&e, sizeof(e) );
    }
 } FC_CAPTURE_AND_RETHROW( (id) ) }
@@ -116,9 +119,9 @@ bool block_database::contains( const block_id_type& id )const
       return false;
 
    index_entry e;
-   auto index_pos = sizeof(e)*block_header::num_from_id(id);
+   int64_t index_pos = sizeof(e) * int64_t(block_header::num_from_id(id));
    _block_num_to_pos.seekg( 0, _block_num_to_pos.end );
-   if ( _block_num_to_pos.tellg() <= index_pos )
+   if ( _block_num_to_pos.tellg() < int64_t(index_pos + sizeof(e)) )
       return false;
    _block_num_to_pos.seekg( index_pos );
    _block_num_to_pos.read( (char*)&e, sizeof(e) );
@@ -130,9 +133,9 @@ block_id_type block_database::fetch_block_id( uint32_t block_num )const
 {
    assert( block_num != 0 );
    index_entry e;
-   auto index_pos = sizeof(e)*block_num;
+   int64_t index_pos = sizeof(e) * int64_t(block_num);
    _block_num_to_pos.seekg( 0, _block_num_to_pos.end );
-   if ( _block_num_to_pos.tellg() <= int64_t(index_pos) )
+   if ( _block_num_to_pos.tellg() <= index_pos )
       FC_THROW_EXCEPTION(fc::key_not_found_exception, "Block number ${block_num} not contained in block database", ("block_num", block_num));
 
    _block_num_to_pos.seekg( index_pos );
@@ -147,7 +150,7 @@ optional<signed_block> block_database::fetch_optional( const block_id_type& id )
    try
    {
       index_entry e;
-      auto index_pos = sizeof(e)*block_header::num_from_id(id);
+      int64_t index_pos = sizeof(e) * int64_t(block_header::num_from_id(id));
       _block_num_to_pos.seekg( 0, _block_num_to_pos.end );
       if ( _block_num_to_pos.tellg() <= index_pos )
          return {};
@@ -179,7 +182,7 @@ optional<signed_block> block_database::fetch_by_number( uint32_t block_num )cons
    try
    {
       index_entry e;
-      auto index_pos = sizeof(e)*block_num;
+      int64_t index_pos = sizeof(e) * int64_t(block_num);
       _block_num_to_pos.seekg( 0, _block_num_to_pos.end );
       if ( _block_num_to_pos.tellg() <= index_pos )
          return {};
@@ -203,34 +206,47 @@ optional<signed_block> block_database::fetch_by_number( uint32_t block_num )cons
    return optional<signed_block>();
 }
 
-optional<signed_block> block_database::last()const
-{
+optional<index_entry> block_database::last_index_entry()const {
    try
    {
       index_entry e;
+
       _block_num_to_pos.seekg( 0, _block_num_to_pos.end );
+      std::streampos pos = _block_num_to_pos.tellg();
+      if( pos < long(sizeof(index_entry)) )
+         return optional<index_entry>();
 
-      if( _block_num_to_pos.tellp() < sizeof(index_entry) )
-         return optional<signed_block>();
+      pos -= pos % sizeof(index_entry);
 
-      _block_num_to_pos.seekg( -sizeof(index_entry), _block_num_to_pos.end );
-      _block_num_to_pos.read( (char*)&e, sizeof(e) );
-      uint64_t pos = _block_num_to_pos.tellg();
-      while( e.block_size == 0 && pos > 0 )
+      _blocks.seekg( 0, _block_num_to_pos.end );
+      const std::streampos blocks_size = _blocks.tellg();
+      while( pos > 0 )
       {
          pos -= sizeof(index_entry);
          _block_num_to_pos.seekg( pos );
          _block_num_to_pos.read( (char*)&e, sizeof(e) );
+         if( _block_num_to_pos.gcount() == sizeof(e) && e.block_size > 0
+                && int64_t(e.block_pos + e.block_size) <= blocks_size )
+            try
+            {
+               vector<char> data( e.block_size );
+               _blocks.seekg( e.block_pos );
+               _blocks.read( data.data(), e.block_size );
+               if( _blocks.gcount() == long(e.block_size) )
+               {
+                  const signed_block block = fc::raw::unpack<signed_block>(data);
+                  if( block.id() == e.block_id )
+                     return e;
+               }
+            }
+            catch (const fc::exception&)
+            {
+            }
+            catch (const std::exception&)
+            {
+            }
+         fc::resize_file( _index_filename, pos );
       }
-
-      if( e.block_size == 0 )
-         return optional<signed_block>();
-
-      vector<char> data( e.block_size );
-      _blocks.seekg( e.block_pos );
-      _blocks.read( data.data(), e.block_size );
-      auto result = fc::raw::unpack<signed_block>(data);
-      return result;
    }
    catch (const fc::exception&)
    {
@@ -238,42 +254,21 @@ optional<signed_block> block_database::last()const
    catch (const std::exception&)
    {
    }
+   return optional<index_entry>();
+}
+
+optional<signed_block> block_database::last()const
+{
+   optional<index_entry> entry = last_index_entry();
+   if( entry.valid() ) return fetch_by_number( block_header::num_from_id(entry->block_id) );
    return optional<signed_block>();
 }
 
 optional<block_id_type> block_database::last_id()const
 {
-   try
-   {
-      index_entry e;
-      _block_num_to_pos.seekg( 0, _block_num_to_pos.end );
-
-      if( _block_num_to_pos.tellp() < sizeof(index_entry) )
-         return optional<block_id_type>();
-
-      _block_num_to_pos.seekg( -sizeof(index_entry), _block_num_to_pos.end );
-      _block_num_to_pos.read( (char*)&e, sizeof(e) );
-      uint64_t pos = _block_num_to_pos.tellg();
-      while( e.block_size == 0 && pos > 0 )
-      {
-         pos -= sizeof(index_entry);
-         _block_num_to_pos.seekg( pos );
-         _block_num_to_pos.read( (char*)&e, sizeof(e) );
-      }
-
-      if( e.block_size == 0 )
-         return optional<block_id_type>();
-
-      return e.block_id;
-   }
-   catch (const fc::exception&)
-   {
-   }
-   catch (const std::exception&)
-   {
-   }
+   optional<index_entry> entry = last_index_entry();
+   if( entry.valid() ) return entry->block_id;
    return optional<block_id_type>();
 }
-
 
 } }

@@ -1,22 +1,25 @@
 /*
  * Copyright (c) 2015 Cryptonomex, Inc., and contributors.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ * The MIT License
  *
- * 1. Any modified source or binaries are used only with the BitShares network.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * 2. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * 3. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 #pragma once
 
@@ -34,6 +37,21 @@ struct static_variant_map
 
 namespace impl {
 
+std::string clean_name( const std::string& name )
+{
+   const static std::string prefix = "graphene::chain::";
+   const static std::string suffix = "_operation";
+   // graphene::chain::.*_operation
+   if(    (name.size() >= prefix.size() + suffix.size())
+       && (name.substr( 0, prefix.size() ) == prefix)
+       && (name.substr( name.size()-suffix.size(), suffix.size() ) == suffix )
+     )
+        return name.substr( prefix.size(), name.size() - prefix.size() - suffix.size() );
+
+   wlog( "don't know how to clean name: ${name}", ("name", name) );
+   return name;
+}
+
 struct static_variant_map_visitor
 {
    static_variant_map_visitor() {}
@@ -43,14 +61,14 @@ struct static_variant_map_visitor
    template< typename T >
    result_type operator()( const T& dummy )
    {
-      assert( which == m.which_to_name.size() );
-      std::string name = js_name<T>::name();
+      FC_ASSERT( which == m.which_to_name.size(), "This should not happen" );
+      std::string name = clean_name( fc::get_typename<T>::name() );
       m.name_to_which[ name ] = which;
       m.which_to_name.push_back( name );
    }
 
    static_variant_map m;
-   int which;
+   uint16_t which; // 16 bit should be practically enough
 };
 
 template< typename StaticVariant >
@@ -62,24 +80,25 @@ struct from_which_visitor
    result_type operator()( const Member& dummy )
    {
       Member result;
-      from_variant( v, result );
+      from_variant( v, result, _max_depth );
       return result;    // converted from StaticVariant to Result automatically due to return type
    }
 
    const variant& v;
+   const uint32_t _max_depth;
 
-   from_which_visitor( const variant& _v ) : v(_v) {}
+   from_which_visitor( const variant& _v, uint32_t max_depth ) : v(_v), _max_depth(max_depth) {}
 };
 
 } // namespace impl
 
 template< typename T >
-T from_which_variant( int which, const variant& v )
+T from_which_variant( int which, const variant& v, uint32_t max_depth )
 {
    // Parse a variant for a known which()
    T dummy;
    dummy.set_which( which );
-   impl::from_which_visitor< T > vtor(v);
+   impl::from_which_visitor< T > vtor(v, max_depth);
    return dummy.visit( vtor );
 }
 
@@ -88,6 +107,7 @@ static_variant_map create_static_variant_map()
 {
    T dummy;
    int n = dummy.count();
+   FC_ASSERT( n <= std::numeric_limits<uint16_t>::max(), "Too many items in this static_variant" );
    impl::static_variant_map_visitor vtor;
    for( int i=0; i<n; i++ )
    {

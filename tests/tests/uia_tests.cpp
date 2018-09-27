@@ -1,33 +1,40 @@
 /*
- * Copyright (c) 2015 Cryptonomex, Inc., and contributors.
- * All rights reserved.
+ * Copyright (c) 2015-2018 Cryptonomex, Inc., and contributors.
  *
- * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ * The MIT License
  *
- * 1. Any modified source or binaries are used only with the BitShares network.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * 2. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * 3. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 
 #include <boost/test/unit_test.hpp>
 
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/exceptions.hpp>
+#include <graphene/chain/hardfork.hpp>
+#include <graphene/chain/is_authorized_asset.hpp>
 
 #include <graphene/chain/account_object.hpp>
 #include <graphene/chain/asset_object.hpp>
 
 #include <fc/crypto/digest.hpp>
+
+#include <locale>
 
 #include "../common/database_fixture.hpp"
 
@@ -49,7 +56,7 @@ BOOST_AUTO_TEST_CASE( create_advanced_uia )
       creator.common_options.market_fee_percent = GRAPHENE_MAX_MARKET_FEE_PERCENT/100; /*1%*/
       creator.common_options.issuer_permissions = charge_market_fee|white_list|override_authority|transfer_restricted|disable_confidential;
       creator.common_options.flags = charge_market_fee|white_list|override_authority|disable_confidential;
-      creator.common_options.core_exchange_rate = price({asset(2),asset(1,1)});
+      creator.common_options.core_exchange_rate = price(asset(2),asset(1,asset_id_type(1)));
       creator.common_options.whitelist_authorities = creator.common_options.blacklist_authorities = {account_id_type()};
       trx.operations.push_back(std::move(creator));
       PUSH_TX( db, trx, ~0 );
@@ -57,7 +64,7 @@ BOOST_AUTO_TEST_CASE( create_advanced_uia )
       const asset_object& test_asset = test_asset_id(db);
       BOOST_CHECK(test_asset.symbol == "ADVANCED");
       BOOST_CHECK(asset(1, test_asset_id) * test_asset.options.core_exchange_rate == asset(2));
-      BOOST_CHECK(test_asset.enforce_white_list());
+      BOOST_CHECK(test_asset.options.flags & white_list);
       BOOST_CHECK(test_asset.options.max_supply == 100000000);
       BOOST_CHECK(!test_asset.bitasset_data_id.valid());
       BOOST_CHECK(test_asset.options.market_fee_percent == GRAPHENE_MAX_MARKET_FEE_PERCENT/100);
@@ -134,33 +141,75 @@ BOOST_AUTO_TEST_CASE( override_transfer_test2 )
 BOOST_AUTO_TEST_CASE( issue_whitelist_uia )
 {
    try {
-      INVOKE(create_advanced_uia);
-      const asset_object& advanced = get_asset("ADVANCED");
-      const account_object& nathan = create_account("nathan");
-      upgrade_to_lifetime_member(nathan);
+      account_id_type izzy_id = create_account("izzy").id;
+      const asset_id_type uia_id = create_user_issued_asset(
+         "ADVANCED", izzy_id(db), white_list ).id;
+      account_id_type nathan_id = create_account("nathan").id;
+      account_id_type vikram_id = create_account("vikram").id;
       trx.clear();
 
       asset_issue_operation op;
-      op.issuer = advanced.issuer;
-      op.asset_to_issue = advanced.amount(1000);
-      op.issue_to_account = nathan.id; //({asset(), advanced.issuer, advanced.amount(1000), nathan.id});
+      op.issuer = uia_id(db).issuer;
+      op.asset_to_issue = asset(1000, uia_id);
+      op.issue_to_account = nathan_id;
       trx.operations.emplace_back(op);
-      //Fail because nathan is not whitelisted.
-      GRAPHENE_REQUIRE_THROW(PUSH_TX( db, trx, ~0 ), fc::exception);
+      set_expiration( db, trx );
+      //Fail because nathan is not whitelisted, but only before hardfork time
+      if( db.head_block_time() <= HARDFORK_415_TIME )
+      {
+         GRAPHENE_REQUIRE_THROW(PUSH_TX( db, trx, ~0 ), fc::exception);
+         generate_blocks( HARDFORK_415_TIME );
+         generate_block();
+         set_expiration( db, trx );
+      }
+      PUSH_TX( db, trx, ~0 );
+
+      BOOST_CHECK(is_authorized_asset( db, nathan_id(db), uia_id(db) ));
+      BOOST_CHECK_EQUAL(get_balance(nathan_id, uia_id), 1000);
+
+      // Make a whitelist, now it should fail
+      {
+         BOOST_TEST_MESSAGE( "Changing the whitelist authority" );
+         asset_update_operation uop;
+         uop.issuer = izzy_id;
+         uop.asset_to_update = uia_id;
+         uop.new_options = uia_id(db).options;
+         uop.new_options.whitelist_authorities.insert(izzy_id);
+         trx.operations.back() = uop;
+         PUSH_TX( db, trx, ~0 );
+         BOOST_CHECK( uia_id(db).options.whitelist_authorities.find(izzy_id) != uia_id(db).options.whitelist_authorities.end() );
+      }
+
+      // Fail because there is a whitelist authority and I'm not whitelisted
+      trx.operations.back() = op;
+      GRAPHENE_REQUIRE_THROW( PUSH_TX( db, trx, ~0 ), fc::exception );
 
       account_whitelist_operation wop;
-      wop.authorizing_account = account_id_type();
-      wop.account_to_list = nathan.id;
+      wop.authorizing_account = izzy_id;
+      wop.account_to_list = vikram_id;
       wop.new_listing = account_whitelist_operation::white_listed;
 
       trx.operations.back() = wop;
+      // Fail because whitelist function is restricted to members only
+      GRAPHENE_REQUIRE_THROW( PUSH_TX( db, trx, ~0 ), fc::exception );
+      upgrade_to_lifetime_member( izzy_id );
+      trx.operations.clear();
+      trx.operations.push_back( wop );
       PUSH_TX( db, trx, ~0 );
 
-      BOOST_CHECK(nathan.is_authorized_asset(advanced));
+      // Still fail after an irrelevant account was added
       trx.operations.back() = op;
-      PUSH_TX( db, trx, ~0 );
+      GRAPHENE_REQUIRE_THROW( PUSH_TX( db, trx, ~0 ), fc::exception );
 
-      BOOST_CHECK_EQUAL(get_balance(nathan, advanced), 1000);
+      wop.account_to_list = nathan_id;
+      trx.operations.back() = wop;
+      PUSH_TX( db, trx, ~0 );
+      trx.operations.back() = op;
+      BOOST_CHECK_EQUAL(get_balance(nathan_id, uia_id), 1000);
+      // Finally succeed when we were whitelisted
+      PUSH_TX( db, trx, ~0 );
+      BOOST_CHECK_EQUAL(get_balance(nathan_id, uia_id), 2000);
+
    } catch(fc::exception& e) {
       edump((e.to_detail_string()));
       throw;
@@ -174,6 +223,7 @@ BOOST_AUTO_TEST_CASE( transfer_whitelist_uia )
       const asset_object& advanced = get_asset("ADVANCED");
       const account_object& nathan = get_account("nathan");
       const account_object& dan = create_account("dan");
+      account_id_type izzy_id = get_account("izzy").id;
       upgrade_to_lifetime_member(dan);
       trx.clear();
 
@@ -189,30 +239,51 @@ BOOST_AUTO_TEST_CASE( transfer_whitelist_uia )
 
       BOOST_TEST_MESSAGE( "Adding dan to whitelist for asset ADVANCED" );
       account_whitelist_operation wop;
-      wop.authorizing_account = account_id_type();
+      wop.authorizing_account = izzy_id;
       wop.account_to_list = dan.id;
       wop.new_listing = account_whitelist_operation::white_listed;
       trx.operations.back() = wop;
       PUSH_TX( db, trx, ~0 );
-      BOOST_TEST_MESSAGE( "Attempting to trnsfer from nathan to dan after whitelisting dan, should succeed" );
+      BOOST_TEST_MESSAGE( "Attempting to transfer from nathan to dan after whitelisting dan, should succeed" );
       trx.operations.back() = op;
       PUSH_TX( db, trx, ~0 );
 
-      BOOST_CHECK_EQUAL(get_balance(nathan, advanced), 900);
+      BOOST_CHECK_EQUAL(get_balance(nathan, advanced), 1900);
       BOOST_CHECK_EQUAL(get_balance(dan, advanced), 100);
 
       BOOST_TEST_MESSAGE( "Attempting to blacklist nathan" );
+      {
+         BOOST_TEST_MESSAGE( "Changing the blacklist authority" );
+         asset_update_operation uop;
+         uop.issuer = izzy_id;
+         uop.asset_to_update = advanced.id;
+         uop.new_options = advanced.options;
+         uop.new_options.blacklist_authorities.insert(izzy_id);
+         trx.operations.back() = uop;
+         PUSH_TX( db, trx, ~0 );
+         BOOST_CHECK( advanced.options.blacklist_authorities.find(izzy_id) != advanced.options.blacklist_authorities.end() );
+      }
+
       wop.new_listing |= account_whitelist_operation::black_listed;
       wop.account_to_list = nathan.id;
       trx.operations.back() = wop;
       PUSH_TX( db, trx, ~0 );
+      BOOST_CHECK( !(is_authorized_asset( db, nathan, advanced )) );
 
       BOOST_TEST_MESSAGE( "Attempting to transfer from nathan after blacklisting, should fail" );
       op.amount = advanced.amount(50);
       trx.operations.back() = op;
       //Fail because nathan is blacklisted
-      GRAPHENE_REQUIRE_THROW(PUSH_TX( db, trx, ~0 ), transfer_from_account_not_whitelisted );
-
+      if( db.head_block_time() <= HARDFORK_419_TIME )
+      {
+         // before the hardfork time, it fails because the whitelist check fails
+         GRAPHENE_REQUIRE_THROW(PUSH_TX( db, trx, ~0 ), transfer_from_account_not_whitelisted );
+      }
+      else
+      {
+         // after the hardfork time, it fails because the fees are not in a whitelisted asset
+         GRAPHENE_REQUIRE_THROW(PUSH_TX( db, trx, ~0 ), fc::exception );
+      }
 
       BOOST_TEST_MESSAGE( "Attempting to burn from nathan after blacklisting, should fail" );
       asset_reserve_operation burn;
@@ -230,6 +301,7 @@ BOOST_AUTO_TEST_CASE( transfer_whitelist_uia )
       {
          BOOST_TEST_MESSAGE( "Changing the blacklist authority to dan" );
          asset_update_operation op;
+         op.issuer = izzy_id;
          op.asset_to_update = advanced.id;
          op.new_options = advanced.options;
          op.new_options.blacklist_authorities.clear();
@@ -242,7 +314,7 @@ BOOST_AUTO_TEST_CASE( transfer_whitelist_uia )
       BOOST_TEST_MESSAGE( "Attempting to transfer from dan back to nathan" );
       trx.operations.back() = op;
       PUSH_TX( db, trx, ~0 );
-      BOOST_CHECK_EQUAL(get_balance(nathan, advanced), 950);
+      BOOST_CHECK_EQUAL(get_balance(nathan, advanced), 1950);
       BOOST_CHECK_EQUAL(get_balance(dan, advanced), 50);
 
       BOOST_TEST_MESSAGE( "Blacklisting nathan by dan" );
@@ -254,11 +326,11 @@ BOOST_AUTO_TEST_CASE( transfer_whitelist_uia )
 
       trx.operations.back() = op;
       //Fail because nathan is blacklisted
-      BOOST_CHECK(!nathan.is_authorized_asset(advanced));
+      BOOST_CHECK(!is_authorized_asset( db, nathan, advanced ));
       GRAPHENE_REQUIRE_THROW(PUSH_TX( db, trx, ~0 ), fc::exception);
 
       //Remove nathan from committee's whitelist, add him to dan's. This should not authorize him to hold ADVANCED.
-      wop.authorizing_account = account_id_type();
+      wop.authorizing_account = izzy_id;
       wop.account_to_list = nathan.id;
       wop.new_listing = account_whitelist_operation::no_listing;
       trx.operations.back() = wop;
@@ -271,7 +343,7 @@ BOOST_AUTO_TEST_CASE( transfer_whitelist_uia )
 
       trx.operations.back() = op;
       //Fail because nathan is not whitelisted
-      BOOST_CHECK(!nathan.is_authorized_asset(advanced));
+      BOOST_CHECK(!is_authorized_asset( db, nathan, advanced ));
       GRAPHENE_REQUIRE_THROW(PUSH_TX( db, trx, ~0 ), fc::exception);
 
       burn.payer = dan.id;
@@ -356,5 +428,103 @@ BOOST_AUTO_TEST_CASE( transfer_restricted_test )
    }
 }
 
+BOOST_AUTO_TEST_CASE( asset_name_test )
+{
+   try
+   {
+      ACTORS( (alice)(bob)(sam) );
+
+      auto has_asset = [&]( std::string symbol ) -> bool
+      {
+         const auto& assets_by_symbol = db.get_index_type<asset_index>().indices().get<by_symbol>();
+         return assets_by_symbol.find( symbol ) != assets_by_symbol.end();
+      };
+
+      // Alice creates asset "ALPHA"
+      BOOST_CHECK( !has_asset("ALPHA") );    BOOST_CHECK( !has_asset("ALPHA.ONE") );
+      create_user_issued_asset( "ALPHA", alice_id(db), 0 );
+      BOOST_CHECK(  has_asset("ALPHA") );    BOOST_CHECK( !has_asset("ALPHA.ONE") );
+
+      // Nobody can create another asset named ALPHA
+      GRAPHENE_REQUIRE_THROW( create_user_issued_asset( "ALPHA",   bob_id(db), 0 ), fc::exception );
+      BOOST_CHECK(  has_asset("ALPHA") );    BOOST_CHECK( !has_asset("ALPHA.ONE") );
+      GRAPHENE_REQUIRE_THROW( create_user_issued_asset( "ALPHA", alice_id(db), 0 ), fc::exception );
+      BOOST_CHECK(  has_asset("ALPHA") );    BOOST_CHECK( !has_asset("ALPHA.ONE") );
+
+      generate_blocks( HARDFORK_385_TIME );
+      generate_block();
+
+      // Bob can't create ALPHA.ONE
+      GRAPHENE_REQUIRE_THROW( create_user_issued_asset( "ALPHA.ONE", bob_id(db), 0 ), fc::exception );
+      BOOST_CHECK(  has_asset("ALPHA") );    BOOST_CHECK( !has_asset("ALPHA.ONE") );
+
+      // Alice can create ALPHA.ONE
+      create_user_issued_asset( "ALPHA.ONE", alice_id(db), 0 );
+      BOOST_CHECK(  has_asset("ALPHA") );    BOOST_CHECK( has_asset("ALPHA.ONE") );
+
+      // Sam tries to create asset ending in a number but fails before hf_620
+      GRAPHENE_REQUIRE_THROW( create_user_issued_asset( "SP500", sam_id(db), 0 ), fc::assert_exception );
+      BOOST_CHECK(  !has_asset("SP500") );
+
+      // create a proposal to create asset ending in a number, this will fail before hf_620
+      auto& core = asset_id_type()(db);
+      asset_create_operation op_p;
+      op_p.issuer = alice_id;
+      op_p.symbol = "SP500";
+      op_p.common_options.core_exchange_rate = asset( 1 ) / asset( 1, asset_id_type( 1 ) );
+      op_p.fee = core.amount(0);
+
+      const auto& curfees = *db.get_global_properties().parameters.current_fees;
+      const auto& proposal_create_fees = curfees.get<proposal_create_operation>();
+      proposal_create_operation prop;
+      prop.fee_paying_account = alice_id;
+      prop.proposed_ops.emplace_back( op_p );
+      prop.expiration_time =  db.head_block_time() + fc::days(1);
+      prop.fee = asset( proposal_create_fees.fee + proposal_create_fees.price_per_kbyte );
+
+      signed_transaction tx;
+      tx.operations.push_back( prop );
+      db.current_fee_schedule().set_fee( tx.operations.back() );
+      set_expiration( db, tx );
+      sign( tx, alice_private_key );
+      GRAPHENE_REQUIRE_THROW(PUSH_TX( db, tx ), fc::assert_exception);
+
+      generate_blocks( HARDFORK_CORE_620_TIME + 1);
+      generate_block();
+
+      // Sam can create asset ending in number after hf_620
+      create_user_issued_asset( "NIKKEI225", sam_id(db), 0 );
+      BOOST_CHECK(  has_asset("NIKKEI225") );
+
+      // make sure other assets can still be created after hf_620
+      create_user_issued_asset( "ALPHA2", alice_id(db), 0 );
+      create_user_issued_asset( "ALPHA2.ONE", alice_id(db), 0 );
+      BOOST_CHECK(  has_asset("ALPHA2") );
+      BOOST_CHECK( has_asset("ALPHA2.ONE") );
+
+      // locales issue
+      std::locale loc1("en_US.UTF8");
+      static const std::locale& loc2 = std::locale::classic();
+      const wchar_t c = L'\u042f';
+      // isalpha will allow non ascii chars if locale is not C
+      BOOST_CHECK_EQUAL( isalpha(c, loc1), true);
+      BOOST_CHECK_EQUAL( isalpha(c, loc2), false);
+
+      // proposal to create asset ending in number will now be created successfully as we are in > hf_620 time
+      prop.expiration_time =  db.head_block_time() + fc::days(3);
+      signed_transaction tx_hf620;
+      tx_hf620.operations.push_back( prop );
+      db.current_fee_schedule().set_fee( tx_hf620.operations.back() );
+      set_expiration( db, tx_hf620 );
+      sign( tx_hf620, alice_private_key );
+      PUSH_TX( db, tx_hf620 );
+
+   }
+   catch(fc::exception& e)
+   {
+      edump((e.to_detail_string()));
+      throw;
+   }
+}
 
 BOOST_AUTO_TEST_SUITE_END()

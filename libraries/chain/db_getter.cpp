@@ -1,22 +1,25 @@
 /*
  * Copyright (c) 2015 Cryptonomex, Inc., and contributors.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ * The MIT License
  *
- * 1. Any modified source or binaries are used only with the BitShares network.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * 2. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * 3. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 
 #include <graphene/chain/database.hpp>
@@ -25,26 +28,33 @@
 #include <graphene/chain/chain_property_object.hpp>
 #include <graphene/chain/global_property_object.hpp>
 
+#include <fc/smart_ref_impl.hpp>
+
 namespace graphene { namespace chain {
 
 const asset_object& database::get_core_asset() const
 {
-   return get(asset_id_type());
+   return *_p_core_asset_obj;
+}
+
+const asset_dynamic_data_object& database::get_core_dynamic_data() const
+{
+   return *_p_core_dynamic_data_obj;
 }
 
 const global_property_object& database::get_global_properties()const
 {
-   return get( global_property_id_type() );
+   return *_p_global_prop_obj;
 }
 
 const chain_property_object& database::get_chain_properties()const
 {
-   return get( chain_property_id_type() );
+   return *_p_chain_property_obj;
 }
 
-const dynamic_global_property_object&database::get_dynamic_global_properties() const
+const dynamic_global_property_object& database::get_dynamic_global_properties() const
 {
-   return get( dynamic_global_property_id_type() );
+   return *_p_dyn_global_prop_obj;
 }
 
 const fee_schedule&  database::current_fee_schedule()const
@@ -54,17 +64,17 @@ const fee_schedule&  database::current_fee_schedule()const
 
 time_point_sec database::head_block_time()const
 {
-   return get( dynamic_global_property_id_type() ).time;
+   return get_dynamic_global_properties().time;
 }
 
 uint32_t database::head_block_num()const
 {
-   return get( dynamic_global_property_id_type() ).head_block_number;
+   return get_dynamic_global_properties().head_block_number;
 }
 
 block_id_type database::head_block_id()const
 {
-   return get( dynamic_global_property_id_type() ).head_block_id;
+   return get_dynamic_global_properties().head_block_id;
 }
 
 decltype( chain_parameters::block_interval ) database::block_interval( )const
@@ -92,5 +102,17 @@ uint32_t database::last_non_undoable_block_num() const
    return head_block_num() - _undo_db.size();
 }
 
+const account_statistics_object& database::get_account_stats_by_owner( account_id_type owner )const
+{
+   auto& idx = get_index_type<account_stats_index>().indices().get<by_owner>();
+   auto itr = idx.find( owner );
+   FC_ASSERT( itr != idx.end(), "Can not find account statistics object for owner ${a}", ("a",owner) );
+   return *itr;
+}
+
+const witness_schedule_object& database::get_witness_schedule_object()const
+{
+   return *_p_witness_schedule_obj;
+}
 
 } }

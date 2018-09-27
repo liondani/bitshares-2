@@ -1,54 +1,60 @@
 /*
- * Copyright (c) 2015 Cryptonomex, Inc., and contributors.
- * All rights reserved.
+ * Copyright (c) 2015-2018 Cryptonomex, Inc., and contributors.
  *
- * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ * The MIT License
  *
- * 1. Any modified source or binaries are used only with the BitShares network.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * 2. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * 3. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 #include <graphene/chain/protocol/asset_ops.hpp>
+
+#include <locale>
 
 namespace graphene { namespace chain {
 
 /**
  *  Valid symbols can contain [A-Z0-9], and '.'
  *  They must start with [A, Z]
- *  They must end with [A, Z]
+ *  They must end with [A, Z] before HF_620 or [A-Z0-9] after it
  *  They can contain a maximum of one '.'
  */
 bool is_valid_symbol( const string& symbol )
 {
+    static const std::locale& loc = std::locale::classic();
     if( symbol.size() < GRAPHENE_MIN_ASSET_SYMBOL_LENGTH )
         return false;
 
     if( symbol.substr(0,3) == "BIT" ) 
-       return false;
+        return false;
 
     if( symbol.size() > GRAPHENE_MAX_ASSET_SYMBOL_LENGTH )
         return false;
 
-    if( !isalpha( symbol.front() ) )
+    if( !isalpha( symbol.front(), loc ) )
         return false;
 
-    if( !isalpha( symbol.back() ) )
+    if( !isalnum( symbol.back(), loc ) )
         return false;
 
     bool dot_already_present = false;
     for( const auto c : symbol )
     {
-        if( (isalpha( c ) && isupper( c )) || isdigit(c) )
+        if( (isalpha( c, loc ) && isupper( c, loc )) || isdigit( c, loc ) )
             continue;
 
         if( c == '.' )
@@ -120,6 +126,12 @@ void asset_update_operation::validate()const
    FC_ASSERT(dummy.asset_id == asset_id_type());
 }
 
+void asset_update_issuer_operation::validate()const
+{
+   FC_ASSERT( fee.amount >= 0 );
+   FC_ASSERT( issuer != new_issuer );
+}
+
 share_type asset_update_operation::calculate_fee(const asset_update_operation::fee_parameters_type& k)const
 {
    return k.fee + calculate_data_fee( fc::raw::pack_size(*this), k.price_per_kbyte );
@@ -139,7 +151,6 @@ void asset_publish_feed_operation::validate()const
    if( (!feed.settlement_price.is_null()) && (!feed.core_exchange_rate.is_null()) )
    {
       FC_ASSERT( feed.settlement_price.base.asset_id == feed.core_exchange_rate.base.asset_id );
-      FC_ASSERT( feed.settlement_price.quote.asset_id == feed.core_exchange_rate.quote.asset_id );
    }
 
    FC_ASSERT( !feed.settlement_price.is_null() );
@@ -159,7 +170,7 @@ void asset_issue_operation::validate()const
    FC_ASSERT( fee.amount >= 0 );
    FC_ASSERT( asset_to_issue.amount.value <= GRAPHENE_MAX_SHARE_SUPPLY );
    FC_ASSERT( asset_to_issue.amount.value > 0 );
-   FC_ASSERT( asset_to_issue.asset_id != 0 );
+   FC_ASSERT( asset_to_issue.asset_id != asset_id_type(0) );
 }
 
 void asset_fund_fee_pool_operation::validate() const
@@ -225,6 +236,18 @@ void asset_options::validate()const
    {
       FC_ASSERT( whitelist_markets.find(item) == whitelist_markets.end() );
    }
+}
+
+void asset_claim_fees_operation::validate()const {
+   FC_ASSERT( fee.amount >= 0 );
+   FC_ASSERT( amount_to_claim.amount > 0 );
+}
+
+void asset_claim_pool_operation::validate()const {
+   FC_ASSERT( fee.amount >= 0 );
+   FC_ASSERT( fee.asset_id != asset_id);
+   FC_ASSERT( amount_to_claim.amount > 0 );
+   FC_ASSERT( amount_to_claim.asset_id == asset_id_type());
 }
 
 } } // namespace graphene::chain

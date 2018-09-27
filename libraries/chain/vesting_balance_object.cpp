@@ -1,22 +1,25 @@
 /*
  * Copyright (c) 2015 Cryptonomex, Inc., and contributors.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ * The MIT License
  *
- * 1. Any modified source or binaries are used only with the BitShares network.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * 2. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * 3. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 
 #include <graphene/chain/vesting_balance_object.hpp>
@@ -61,7 +64,7 @@ asset linear_vesting_policy::get_allowed_withdraw( const vesting_policy_context&
         }
     }
 
-    return asset( allowed_withdraw, ctx.amount.asset_id );
+    return asset( allowed_withdraw, ctx.balance.asset_id );
 }
 
 void linear_vesting_policy::on_deposit(const vesting_policy_context& ctx)
@@ -94,7 +97,7 @@ fc::uint128_t cdd_vesting_policy::compute_coin_seconds_earned(const vesting_poli
    delta_coin_seconds *= delta_seconds;
 
    fc::uint128_t coin_seconds_earned_cap = ctx.balance.amount.value;
-   coin_seconds_earned_cap *= vesting_seconds;
+   coin_seconds_earned_cap *= std::max(vesting_seconds, 1u);
 
    return std::min(coin_seconds_earned + delta_coin_seconds, coin_seconds_earned_cap);
 }
@@ -110,7 +113,7 @@ asset cdd_vesting_policy::get_allowed_withdraw(const vesting_policy_context& ctx
    if(ctx.now <= start_claim)
       return asset(0, ctx.balance.asset_id);
    fc::uint128_t cs_earned = compute_coin_seconds_earned(ctx);
-   fc::uint128_t withdraw_available = cs_earned / vesting_seconds;
+   fc::uint128_t withdraw_available = cs_earned / std::max(vesting_seconds, 1u);
    assert(withdraw_available <= ctx.balance.amount.value);
    return asset(withdraw_available.to_uint64(), ctx.balance.asset_id);
 }
@@ -123,14 +126,14 @@ void cdd_vesting_policy::on_deposit(const vesting_policy_context& ctx)
 void cdd_vesting_policy::on_deposit_vested(const vesting_policy_context& ctx)
 {
    on_deposit(ctx);
-   coin_seconds_earned += ctx.amount.amount.value * vesting_seconds;
+   coin_seconds_earned += ctx.amount.amount.value * std::max(vesting_seconds, 1u);
 }
 
 void cdd_vesting_policy::on_withdraw(const vesting_policy_context& ctx)
 {
    update_coin_seconds_earned(ctx);
    fc::uint128_t coin_seconds_needed = ctx.amount.amount.value;
-   coin_seconds_needed *= vesting_seconds;
+   coin_seconds_needed *= std::max(vesting_seconds, 1u);
    // is_withdraw_allowed should forbid any withdrawal that
    // would trigger this assert
    assert(coin_seconds_needed <= coin_seconds_earned);

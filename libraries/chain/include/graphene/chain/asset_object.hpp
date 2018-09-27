@@ -1,27 +1,29 @@
 /*
- * Copyright (c) 2015 Cryptonomex, Inc., and contributors.
- * All rights reserved.
+ * Copyright (c) 2017 Cryptonomex, Inc., and contributors.
  *
- * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ * The MIT License
  *
- * 1. Any modified source or binaries are used only with the BitShares network.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * 2. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * 3. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 #pragma once
 #include <graphene/chain/protocol/asset_ops.hpp>
 #include <boost/multi_index/composite_key.hpp>
-#include <graphene/db/flat_index.hpp>
 #include <graphene/db/generic_index.hpp>
 
 /**
@@ -82,8 +84,6 @@ namespace graphene { namespace chain {
          /// @return true if symbol is a valid ticker symbol; false otherwise.
          static bool is_valid_symbol( const string& symbol );
 
-         /// @return true if accounts must be on a whitelist in order to hold this asset; false otherwise.
-         bool enforce_white_list()const { return options.flags & white_list; }
          /// @return true if this is a market-issued asset; false otherwise.
          bool is_market_issued()const { return bitasset_data_id.valid(); }
          /// @return true if users may request force-settlement of this market-issued asset; false otherwise
@@ -129,6 +129,8 @@ namespace graphene { namespace chain {
          /// Extra data associated with BitAssets. This field is non-null if and only if is_market_issued() returns true
          optional<asset_bitasset_data_id_type> bitasset_data_id;
 
+         optional<account_id_type> buyback_account;
+
          asset_id_type get_id()const { return id; }
 
          void validate()const
@@ -143,7 +145,12 @@ namespace graphene { namespace chain {
 
          template<class DB>
          const asset_bitasset_data_object& bitasset_data(const DB& db)const
-         { assert(bitasset_data_id); return db.get(*bitasset_data_id); }
+         {
+            FC_ASSERT( bitasset_data_id.valid(),
+                       "Asset ${a} (${id}) is not a market issued asset.",
+                       ("a",this->symbol)("id",this->id) );
+            return db.get( *bitasset_data_id );
+         }
 
          template<class DB>
          const asset_dynamic_data_object& dynamic_data(const DB& db)const
@@ -168,6 +175,9 @@ namespace graphene { namespace chain {
       public:
          static const uint8_t space_id = implementation_ids;
          static const uint8_t type_id  = impl_asset_bitasset_data_type;
+
+         /// The asset this object belong to
+         asset_id_type asset_id;
 
          /// The tunable options for BitAssets are stored in this field.
          bitasset_options options;
@@ -206,42 +216,92 @@ namespace graphene { namespace chain {
          share_type settlement_fund;
          ///@}
 
+         /// Track whether core_exchange_rate in corresponding asset_object has updated
+         bool asset_cer_updated = false;
+
+         /// Track whether core exchange rate in current feed has updated
+         bool feed_cer_updated = false;
+
+         /// Whether need to update core_exchange_rate in asset_object
+         bool need_to_update_cer() const
+         {
+            return ( ( feed_cer_updated || asset_cer_updated ) && !current_feed.core_exchange_rate.is_null() );
+         }
+
+         /// The time when @ref current_feed would expire
          time_point_sec feed_expiration_time()const
-         { return current_feed_publication_time + options.feed_lifetime_sec; }
-         bool feed_is_expired(time_point_sec current_time)const
+         {
+            uint32_t current_feed_seconds = current_feed_publication_time.sec_since_epoch();
+            if( std::numeric_limits<uint32_t>::max() - current_feed_seconds <= options.feed_lifetime_sec )
+               return time_point_sec::maximum();
+            else
+               return current_feed_publication_time + options.feed_lifetime_sec;
+         }
+         bool feed_is_expired_before_hardfork_615(time_point_sec current_time)const
          { return feed_expiration_time() >= current_time; }
+         bool feed_is_expired(time_point_sec current_time)const
+         { return feed_expiration_time() <= current_time; }
          void update_median_feeds(time_point_sec current_time);
    };
 
+   // key extractor for short backing asset
+   struct bitasset_short_backing_asset_extractor
+   {
+      typedef asset_id_type result_type;
+      result_type operator() (const asset_bitasset_data_object& obj) const
+      {
+         return obj.options.short_backing_asset;
+      }
+   };
 
+   struct by_short_backing_asset;
    struct by_feed_expiration;
+   struct by_cer_update;
+
    typedef multi_index_container<
       asset_bitasset_data_object,
       indexed_by<
          ordered_unique< tag<by_id>, member< object, object_id_type, &object::id > >,
-         ordered_non_unique< tag<by_feed_expiration>,
-            const_mem_fun< asset_bitasset_data_object, time_point_sec, &asset_bitasset_data_object::feed_expiration_time >
+         ordered_non_unique< tag<by_short_backing_asset>, bitasset_short_backing_asset_extractor >,
+         ordered_unique< tag<by_feed_expiration>,
+            composite_key< asset_bitasset_data_object,
+               const_mem_fun< asset_bitasset_data_object, time_point_sec, &asset_bitasset_data_object::feed_expiration_time >,
+               member< asset_bitasset_data_object, asset_id_type, &asset_bitasset_data_object::asset_id >
+            >
+         >,
+         ordered_non_unique< tag<by_cer_update>,
+                             const_mem_fun< asset_bitasset_data_object, bool, &asset_bitasset_data_object::need_to_update_cer >
          >
       >
    > asset_bitasset_data_object_multi_index_type;
-   typedef flat_index<asset_bitasset_data_object> asset_bitasset_data_index;
+   typedef generic_index<asset_bitasset_data_object, asset_bitasset_data_object_multi_index_type> asset_bitasset_data_index;
 
    struct by_symbol;
+   struct by_type;
+   struct by_issuer;
    typedef multi_index_container<
       asset_object,
       indexed_by<
          ordered_unique< tag<by_id>, member< object, object_id_type, &object::id > >,
-         ordered_unique< tag<by_symbol>, member<asset_object, string, &asset_object::symbol> >
+         ordered_unique< tag<by_symbol>, member<asset_object, string, &asset_object::symbol> >,
+         ordered_non_unique< tag<by_issuer>, member<asset_object, account_id_type, &asset_object::issuer > >,
+         ordered_unique< tag<by_type>,
+            composite_key< asset_object,
+                const_mem_fun<asset_object, bool, &asset_object::is_market_issued>,
+                member< object, object_id_type, &object::id >
+            >
+         >
       >
    > asset_object_multi_index_type;
    typedef generic_index<asset_object, asset_object_multi_index_type> asset_index;
 
-
 } } // graphene::chain
+
 FC_REFLECT_DERIVED( graphene::chain::asset_dynamic_data_object, (graphene::db::object),
                     (current_supply)(confidential_supply)(accumulated_fees)(fee_pool) )
 
 FC_REFLECT_DERIVED( graphene::chain::asset_bitasset_data_object, (graphene::db::object),
+                    (asset_id)
                     (feeds)
                     (current_feed)
                     (current_feed_publication_time)
@@ -250,6 +310,8 @@ FC_REFLECT_DERIVED( graphene::chain::asset_bitasset_data_object, (graphene::db::
                     (is_prediction_market)
                     (settlement_price)
                     (settlement_fund)
+                    (asset_cer_updated)
+                    (feed_cer_updated)
                   )
 
 FC_REFLECT_DERIVED( graphene::chain::asset_object, (graphene::db::object),
@@ -259,5 +321,5 @@ FC_REFLECT_DERIVED( graphene::chain::asset_object, (graphene::db::object),
                     (options)
                     (dynamic_asset_data_id)
                     (bitasset_data_id)
+                    (buyback_account)
                   )
-
