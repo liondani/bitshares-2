@@ -1,25 +1,29 @@
 /*
  * Copyright (c) 2015 Cryptonomex, Inc., and contributors.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ * The MIT License
  *
- * 1. Any modified source or binaries are used only with the BitShares network.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * 2. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * 3. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 #include <graphene/chain/exceptions.hpp>
 #include <graphene/chain/protocol/fee_schedule.hpp>
+#include <graphene/chain/protocol/block.hpp>
 #include <fc/io/raw.hpp>
 #include <fc/bitutil.hpp>
 #include <fc/smart_ref_impl.hpp>
@@ -53,7 +57,7 @@ void transaction::validate() const
 {
    FC_ASSERT( operations.size() > 0, "A transaction must have at least one operation", ("trx",*this) );
    for( const auto& op : operations )
-      operation_validate(op); 
+      operation_validate(op);
 }
 
 graphene::chain::transaction_id_type graphene::chain::transaction::id() const
@@ -68,6 +72,7 @@ const signature_type& graphene::chain::signed_transaction::sign(const private_ke
 {
    digest_type h = sig_digest( chain_id );
    signatures.push_back(key.sign_compact(h));
+   signees.clear(); // Clear signees since it may be inconsistent after added a new signature
    return signatures.back();
 }
 
@@ -94,15 +99,18 @@ void transaction::get_required_authorities( flat_set<account_id_type>& active, f
 {
    for( const auto& op : operations )
       operation_get_required_authorities( op, active, owner, other );
+   for( const auto& account : owner )
+      active.erase( account );
 }
 
 
 
+const flat_set<public_key_type> empty_keyset;
 
 struct sign_state
 {
-      /** returns true if we have a signature for this key or can 
-       * produce a signature for this key, else returns false. 
+      /** returns true if we have a signature for this key or can
+       * produce a signature for this key, else returns false.
        */
       bool signed_by( const public_key_type& k )
       {
@@ -161,7 +169,7 @@ struct sign_state
 
       /**
        *  Checks to see if we have signatures of the active authorites of
-       *  the accounts specified in authority or the keys specified. 
+       *  the accounts specified in authority or the keys specified.
        */
       bool check_authority( const authority* au, uint32_t depth = 0 )
       {
@@ -190,7 +198,7 @@ struct sign_state
             if( approved_by.find(a.first) == approved_by.end() )
             {
                if( depth == max_recursion )
-                  return false;
+                  continue;
                if( check_authority( get_active( a.first ), depth+1 ) )
                {
                   approved_by.insert( a.first );
@@ -223,7 +231,7 @@ struct sign_state
 
       sign_state( const flat_set<public_key_type>& sigs,
                   const std::function<const authority*(account_id_type)>& a,
-                  const flat_set<public_key_type>& keys = flat_set<public_key_type>() )
+                  const flat_set<public_key_type>& keys = empty_keyset )
       :get_active(a),available_keys(keys)
       {
          for( const auto& key : sigs )
@@ -240,7 +248,7 @@ struct sign_state
 };
 
 
-void verify_authority( const vector<operation>& ops, const flat_set<public_key_type>& sigs, 
+void verify_authority( const vector<operation>& ops, const flat_set<public_key_type>& sigs,
                        const std::function<const authority*(account_id_type)>& get_active,
                        const std::function<const authority*(account_id_type)>& get_owner,
                        uint32_t max_recursion_depth,
@@ -272,18 +280,19 @@ void verify_authority( const vector<operation>& ops, const flat_set<public_key_t
    }
 
    // fetch all of the top level authorities
-   for( auto id : required_active )
-   {
-      GRAPHENE_ASSERT( s.check_authority(id) || 
-                       s.check_authority(get_owner(id)), 
-                       tx_missing_active_auth, "Missing Active Authority ${id}", ("id",id)("auth",*get_active(id))("owner",*get_owner(id)) );
-   }
-
    for( auto id : required_owner )
    {
       GRAPHENE_ASSERT( owner_approvals.find(id) != owner_approvals.end() ||
-                       s.check_authority(get_owner(id)), 
+                       s.check_authority(get_owner(id)),
                        tx_missing_owner_auth, "Missing Owner Authority ${id}", ("id",id)("auth",*get_owner(id)) );
+   }
+
+   for( auto id : required_active )
+   {
+      GRAPHENE_ASSERT( s.check_authority(id) ||
+                       s.check_authority(get_owner(id)),
+                       tx_missing_active_auth, "Missing Active Authority ${id}",
+                       ("id",id)("auth",*get_active(id))("owner",*get_owner(id)) );
    }
 
    GRAPHENE_ASSERT(
@@ -294,20 +303,25 @@ void verify_authority( const vector<operation>& ops, const flat_set<public_key_t
 } FC_CAPTURE_AND_RETHROW( (ops)(sigs) ) }
 
 
-flat_set<public_key_type> signed_transaction::get_signature_keys( const chain_id_type& chain_id )const
+const flat_set<public_key_type>& signed_transaction::get_signature_keys( const chain_id_type& chain_id )const
 { try {
-   auto d = sig_digest( chain_id );
-   flat_set<public_key_type> result;
-   for( const auto&  sig : signatures )
+   // Strictly we should check whether the given chain ID is same as the one used to initialize the `signees` field.
+   // However, we don't pass in another chain ID so far, for better performance, we skip the check.
+   if( signees.empty() && !signatures.empty() )
    {
-      GRAPHENE_ASSERT(
-         result.insert( fc::ecc::public_key(sig,d) ).second,
-         tx_duplicate_sig,
-         "Duplicate Signature detected" );
+      auto d = sig_digest( chain_id );
+      flat_set<public_key_type> result;
+      for( const auto&  sig : signatures )
+      {
+         GRAPHENE_ASSERT(
+            result.insert( fc::ecc::public_key(sig,d) ).second,
+            tx_duplicate_sig,
+            "Duplicate Signature detected" );
+      }
+      signees = std::move( result );
    }
-   return result;
+   return signees;
 } FC_CAPTURE_AND_RETHROW() }
-
 
 
 set<public_key_type> signed_transaction::get_required_signatures(
@@ -322,8 +336,8 @@ set<public_key_type> signed_transaction::get_required_signatures(
    vector<authority> other;
    get_required_authorities( required_active, required_owner, other );
 
-
-   sign_state s(get_signature_keys( chain_id ),get_active,available_keys);
+   const flat_set<public_key_type>& signature_keys = get_signature_keys( chain_id );
+   sign_state s( signature_keys, get_active, available_keys );
    s.max_recursion = max_recursion_depth;
 
    for( const auto& auth : other )
@@ -331,14 +345,15 @@ set<public_key_type> signed_transaction::get_required_signatures(
    for( auto& owner : required_owner )
       s.check_authority( get_owner( owner ) );
    for( auto& active : required_active )
-      s.check_authority( active  );
+      s.check_authority( active ) || s.check_authority( get_owner( active ) );
 
    s.remove_unused_signatures();
 
    set<public_key_type> result;
 
    for( auto& provided_sig : s.provided_signatures )
-      if( available_keys.find( provided_sig.first ) != available_keys.end() )
+      if( available_keys.find( provided_sig.first ) != available_keys.end()
+            && signature_keys.find( provided_sig.first ) == signature_keys.end() )
          result.insert( provided_sig.first );
 
    return result;

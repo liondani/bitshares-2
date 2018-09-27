@@ -1,27 +1,33 @@
 /*
  * Copyright (c) 2015 Cryptonomex, Inc., and contributors.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ * The MIT License
  *
- * 1. Any modified source or binaries are used only with the BitShares network.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * 2. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * 3. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 #pragma once
 #include <graphene/chain/protocol/operations.hpp>
 #include <graphene/chain/evaluator.hpp>
 #include <graphene/chain/database.hpp>
+
+#include <graphene/chain/hardfork.hpp>
+#include <locale>
 
 namespace graphene { namespace chain {
 
@@ -32,6 +38,13 @@ namespace graphene { namespace chain {
 
          void_result do_evaluate( const asset_create_operation& o );
          object_id_type do_apply( const asset_create_operation& o );
+
+         /** override the default behavior defined by generic_evalautor which is to
+          * post the fee to fee_paying_account_stats.pending_fees
+          */
+         virtual void pay_fee() override;
+      private:
+         bool fee_is_odd;
    };
 
    class asset_issue_evaluator : public evaluator<asset_issue_evaluator>
@@ -68,6 +81,17 @@ namespace graphene { namespace chain {
          const asset_object* asset_to_update = nullptr;
    };
 
+   class asset_update_issuer_evaluator : public evaluator<asset_update_issuer_evaluator>
+   {
+      public:
+         typedef asset_update_issuer_operation operation_type;
+
+         void_result do_evaluate( const asset_update_issuer_operation& o );
+         void_result do_apply( const asset_update_issuer_operation& o );
+
+         const asset_object* asset_to_update = nullptr;
+   };
+
    class asset_update_bitasset_evaluator : public evaluator<asset_update_bitasset_evaluator>
    {
       public:
@@ -77,6 +101,7 @@ namespace graphene { namespace chain {
          void_result do_apply( const asset_update_bitasset_operation& o );
 
          const asset_bitasset_data_object* bitasset_to_update = nullptr;
+         const asset_object* asset_to_update = nullptr;
    };
 
    class asset_update_feed_producers_evaluator : public evaluator<asset_update_feed_producers_evaluator>
@@ -87,7 +112,7 @@ namespace graphene { namespace chain {
          void_result do_evaluate( const operation_type& o );
          void_result do_apply( const operation_type& o );
 
-         const asset_bitasset_data_object* bitasset_to_update = nullptr;
+         const asset_object* asset_to_update = nullptr;
    };
 
    class asset_fund_fee_pool_evaluator : public evaluator<asset_fund_fee_pool_evaluator>
@@ -130,7 +155,26 @@ namespace graphene { namespace chain {
          void_result do_evaluate( const asset_publish_feed_operation& o );
          void_result do_apply( const asset_publish_feed_operation& o );
 
-         std::map<std::pair<asset_id_type,asset_id_type>,price_feed> median_feed_values;
+         const asset_object* asset_ptr = nullptr;
+         const asset_bitasset_data_object* bitasset_ptr = nullptr;
+   };
+
+   class asset_claim_fees_evaluator : public evaluator<asset_claim_fees_evaluator>
+   {
+      public:
+         typedef asset_claim_fees_operation operation_type;
+
+         void_result do_evaluate( const asset_claim_fees_operation& o );
+         void_result do_apply( const asset_claim_fees_operation& o );
+   };
+
+   class asset_claim_pool_evaluator : public evaluator<asset_claim_pool_evaluator>
+   {
+      public:
+         typedef asset_claim_pool_operation operation_type;
+
+         void_result do_evaluate( const asset_claim_pool_operation& o );
+         void_result do_apply( const asset_claim_pool_operation& o );
    };
 
 } } // graphene::chain

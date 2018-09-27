@@ -1,28 +1,33 @@
 /*
  * Copyright (c) 2015 Cryptonomex, Inc., and contributors.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ * The MIT License
  *
- * 1. Any modified source or binaries are used only with the BitShares network.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * 2. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * 3. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 #include <graphene/chain/withdraw_permission_evaluator.hpp>
 #include <graphene/chain/withdraw_permission_object.hpp>
 #include <graphene/chain/account_object.hpp>
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/exceptions.hpp>
+#include <graphene/chain/hardfork.hpp>
+#include <graphene/chain/is_authorized_asset.hpp>
 
 namespace graphene { namespace chain {
 
@@ -53,24 +58,44 @@ object_id_type withdraw_permission_create_evaluator::do_apply(const operation_ty
 
 void_result withdraw_permission_claim_evaluator::do_evaluate(const withdraw_permission_claim_evaluator::operation_type& op)
 { try {
-   database& d = db();
+   const database& d = db();
+   time_point_sec head_block_time = d.head_block_time();
 
    const withdraw_permission_object& permit = op.withdraw_permission(d);
-   FC_ASSERT(permit.expiration > d.head_block_time() );
+   FC_ASSERT(permit.expiration > head_block_time);
    FC_ASSERT(permit.authorized_account == op.withdraw_to_account);
    FC_ASSERT(permit.withdraw_from_account == op.withdraw_from_account);
-   FC_ASSERT(op.amount_to_withdraw <= permit.available_this_period( d.head_block_time() ) );
+   if (head_block_time >= HARDFORK_23_TIME) {
+      FC_ASSERT(permit.period_start_time <= head_block_time);
+   }
+   FC_ASSERT(op.amount_to_withdraw <= permit.available_this_period( head_block_time ) );
    FC_ASSERT(d.get_balance(op.withdraw_from_account, op.amount_to_withdraw.asset_id) >= op.amount_to_withdraw);
 
    const asset_object& _asset = op.amount_to_withdraw.asset_id(d);
-   if( _asset.is_transfer_restricted() ) FC_ASSERT( _asset.issuer == permit.authorized_account || _asset.issuer == permit.withdraw_from_account );
-
-   if( _asset.enforce_white_list() )
+   if( _asset.is_transfer_restricted() )
    {
-      const account_object& from  = op.withdraw_to_account(d);
-      const account_object& to    = permit.authorized_account(d);
-      FC_ASSERT( to.is_authorized_asset( _asset ) );
-      FC_ASSERT( from.is_authorized_asset( _asset ) );
+      FC_ASSERT( _asset.issuer == permit.authorized_account || _asset.issuer == permit.withdraw_from_account,
+                 "Asset ${a} '${sym}' has transfer_restricted flag enabled",
+                 ("a", _asset.id)("sym", _asset.symbol) );
+   }
+
+   const account_object& to    = permit.authorized_account(d);
+   FC_ASSERT( is_authorized_asset( d, to, _asset ),
+              "Account ${acct} '${name}' is unauthorized to transact asset ${a} '${sym}' due to whitelist / blacklist",
+              ("acct", to.id)("name", to.name)("a", _asset.id)("sym", _asset.symbol) );
+
+   const account_object& from  = op.withdraw_from_account(d);
+   bool from_is_authorized = ( is_authorized_asset( d, from, _asset ) );
+   if( head_block_time > HARDFORK_CORE_942_TIME ) // TODO remove this check after hard fork if things in `else` did not occur
+   {
+      FC_ASSERT( from_is_authorized,
+                 "Account ${acct} '${name}' is unauthorized to withdraw asset ${a} '${sym}' due to whitelist / blacklist",
+                 ("acct", from.id)("name", from.name)("a", _asset.id)("sym", _asset.symbol) );
+   }
+   else
+   {
+      if( !from_is_authorized )
+         wlog( "Unauthorized asset withdrawal (issue #942) occurred at block ${b}", ("b", d.head_block_num()) );
    }
 
    return void_result();

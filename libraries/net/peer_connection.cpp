@@ -1,22 +1,25 @@
 /*
  * Copyright (c) 2015 Cryptonomex, Inc., and contributors.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ * The MIT License
  *
- * 1. Any modified source or binaries are used only with the BitShares network.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * 2. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * 3. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 #include <graphene/net/peer_connection.hpp>
 #include <graphene/net/exceptions.hpp>
@@ -25,6 +28,8 @@
 #include <graphene/chain/protocol/fee_schedule.hpp>
 
 #include <fc/thread/thread.hpp>
+
+#include <boost/scope_exit.hpp>
 
 #ifdef DEFAULT_LOGGER
 # undef DEFAULT_LOGGER
@@ -83,11 +88,12 @@ namespace graphene { namespace net
       inhibit_fetching_sync_blocks(false),
       transaction_fetching_inhibited_until(fc::time_point::min()),
       last_known_fork_block_number(0),
-      firewall_check_state(nullptr)
+      firewall_check_state(nullptr),
 #ifndef NDEBUG
-      ,_thread(&fc::thread::current()),
-      _send_message_queue_tasks_running(0)
+      _thread(&fc::thread::current()),
+      _send_message_queue_tasks_running(0),
 #endif
+      _currently_handling_message(false)
     {
     }
 
@@ -254,7 +260,7 @@ namespace graphene { namespace net
       }
       catch ( fc::exception& e )
       {
-        elog( "fatal: error connecting to peer ${remote_endpoint}: ${e}", ("remote_endpoint", remote_endpoint )("e", e.to_detail_string() ) );
+        wlog( "error connecting to peer ${remote_endpoint}: ${e}", ("remote_endpoint", remote_endpoint )("e", e.to_detail_string() ) );
         throw;
       }
     } // connect_to()
@@ -262,6 +268,10 @@ namespace graphene { namespace net
     void peer_connection::on_message( message_oriented_connection* originating_connection, const message& received_message )
     {
       VERIFY_CORRECT_THREAD();
+      _currently_handling_message = true;
+      BOOST_SCOPE_EXIT(this_) {
+        this_->_currently_handling_message = false;
+      } BOOST_SCOPE_EXIT_END
       _node->on_message( this, received_message );
     }
 
@@ -302,24 +312,24 @@ namespace graphene { namespace net
         }
         catch (const fc::exception& send_error)
         {
-          elog("Error sending message: ${exception}.  Closing connection.", ("exception", send_error));
+          wlog("Error sending message: ${exception}.  Closing connection.", ("exception", send_error));
           try
           {
             close_connection();
           }
           catch (const fc::exception& close_error)
           {
-            elog("Caught error while closing connection: ${exception}", ("exception", close_error));
+            wlog("Caught error while closing connection: ${exception}", ("exception", close_error));
           }
           return;
         }
         catch (const std::exception& e)
         {
-          elog("message_oriented_exception::send_message() threw a std::exception(): ${what}", ("what", e.what()));
+          wlog("message_oriented_exception::send_message() threw a std::exception(): ${what}", ("what", e.what()));
         }
         catch (...)
         {
-          elog("message_oriented_exception::send_message() threw an unhandled exception");
+          wlog("message_oriented_exception::send_message() threw an unhandled exception");
         }
         _queued_messages.front()->transmission_finish_time = fc::time_point::now();
         _total_queued_messages_size -= _queued_messages.front()->get_size_in_queue();
@@ -335,7 +345,7 @@ namespace graphene { namespace net
       _queued_messages.emplace(std::move(message_to_send));
       if (_total_queued_messages_size > GRAPHENE_NET_MAXIMUM_QUEUED_MESSAGES_IN_BYTES)
       {
-        elog("send queue exceeded maximum size of ${max} bytes (current size ${current} bytes)",
+        wlog("send queue exceeded maximum size of ${max} bytes (current size ${current} bytes)",
              ("max", GRAPHENE_NET_MAXIMUM_QUEUED_MESSAGES_IN_BYTES)("current", _total_queued_messages_size));
         try
         {
@@ -343,7 +353,7 @@ namespace graphene { namespace net
         }
         catch (const fc::exception& e)
         {
-          elog("Caught error while closing connection: ${exception}", ("exception", e));
+          wlog("Caught error while closing connection: ${exception}", ("exception", e));
         }
         return;
       }
@@ -435,16 +445,22 @@ namespace graphene { namespace net
       _remote_endpoint = new_remote_endpoint;
     }
 
-    bool peer_connection::busy()
+    bool peer_connection::busy() const
     {
       VERIFY_CORRECT_THREAD();
       return !items_requested_from_peer.empty() || !sync_items_requested_from_peer.empty() || item_ids_requested_from_peer;
     }
 
-    bool peer_connection::idle()
+    bool peer_connection::idle() const
     {
       VERIFY_CORRECT_THREAD();
       return !busy();
+    }
+
+    bool peer_connection::is_currently_handling_message() const
+    {
+      VERIFY_CORRECT_THREAD();
+      return _currently_handling_message;
     }
 
     bool peer_connection::is_transaction_fetching_inhibited() const

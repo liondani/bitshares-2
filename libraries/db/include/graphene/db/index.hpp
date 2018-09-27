@@ -1,26 +1,28 @@
 /*
  * Copyright (c) 2015 Cryptonomex, Inc., and contributors.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ * The MIT License
  *
- * 1. Any modified source or binaries are used only with the BitShares network.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * 2. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * 3. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 #pragma once
 #include <graphene/db/object.hpp>
-#include <graphene/db/type_serializer.hpp>
 #include <fc/interprocess/file_mapping.hpp>
 #include <fc/io/raw.hpp>
 #include <fc/io/json.hpp>
@@ -106,7 +108,7 @@ namespace graphene { namespace db {
          const object&              get( object_id_type id )const
          {
             auto maybe_found = find( id );
-            FC_ASSERT( maybe_found != nullptr, "Unable to find Object", ("id",id) );
+            FC_ASSERT( maybe_found != nullptr, "Unable to find Object ${id}", ("id",id) );
             return *maybe_found;
          }
 
@@ -128,6 +130,8 @@ namespace graphene { namespace db {
          virtual fc::uint128        hash()const = 0;
          virtual void               add_observer( const shared_ptr<index_observer>& ) = 0;
 
+         virtual void               object_from_variant( const fc::variant& var, object& obj, uint32_t max_depth )const = 0;
+         virtual void               object_default( object& obj )const = 0;
    };
 
    class secondary_index
@@ -160,10 +164,11 @@ namespace graphene { namespace db {
          /** called just after obj is modified */
          void on_modify( const object& obj );
 
-         template<typename T>
-         void add_secondary_index()
+         template<typename T, typename... Args>
+         T* add_secondary_index(Args... args)
          {
-            _sindex.emplace_back( new T() );
+            _sindex.emplace_back( new T(args...) );
+            return static_cast<T*>(_sindex.back().get());
          }
 
          template<typename T>
@@ -272,6 +277,15 @@ namespace graphene { namespace db {
             return result;
          }
 
+         virtual const object& insert( object&& obj ) override
+         {
+            const auto& result = DerivedIndex::insert( std::move( obj ) );
+            for( const auto& item : _sindex )
+               item->object_inserted( result );
+            on_add( result );
+            return result;
+         }
+
          virtual void  remove( const object& obj ) override
          {
             for( const auto& item : _sindex )
@@ -294,6 +308,24 @@ namespace graphene { namespace db {
          virtual void add_observer( const shared_ptr<index_observer>& o ) override
          {
             _observers.emplace_back( o );
+         }
+
+         virtual void object_from_variant( const fc::variant& var, object& obj, uint32_t max_depth )const override
+         {
+            object_id_type id = obj.id;
+            object_type* result = dynamic_cast<object_type*>( &obj );
+            FC_ASSERT( result != nullptr );
+            fc::from_variant( var, *result, max_depth );
+            obj.id = id;
+         }
+
+         virtual void object_default( object& obj )const override
+         {
+            object_id_type id = obj.id;
+            object_type* result = dynamic_cast<object_type*>( &obj );
+            FC_ASSERT( result != nullptr );
+            (*result) = object_type();
+            obj.id = id;
          }
 
       private:

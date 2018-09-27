@@ -1,29 +1,31 @@
 /*
  * Copyright (c) 2015 Cryptonomex, Inc., and contributors.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ * The MIT License
  *
- * 1. Any modified source or binaries are used only with the BitShares network.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * 2. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * 3. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 #pragma once
 #include <graphene/db/index.hpp>
 #include <boost/multi_index_container.hpp>
 #include <boost/multi_index/member.hpp>
 #include <boost/multi_index/ordered_index.hpp>
-#include <boost/multi_index/hashed_index.hpp>
 #include <boost/multi_index/mem_fun.hpp>
 
 namespace graphene { namespace chain {
@@ -65,10 +67,25 @@ namespace graphene { namespace chain {
 
          virtual void modify( const object& obj, const std::function<void(object&)>& m )override
          {
-            assert( nullptr != dynamic_cast<const ObjectType*>(&obj) );
-            auto ok = _indices.modify( _indices.iterator_to( static_cast<const ObjectType&>(obj) ),
-                                       [&m]( ObjectType& o ){ m(o); } );
-            FC_ASSERT( ok, "Could not modify object, most likely a index constraint was violated" );
+            assert(nullptr != dynamic_cast<const ObjectType*>(&obj));
+            std::exception_ptr exc;
+            auto ok = _indices.modify(_indices.iterator_to(static_cast<const ObjectType&>(obj)),
+                                       [&m, &exc](ObjectType& o) mutable {
+                                          try {
+                                             m(o);
+                                          } catch (fc::exception& e) {
+                                             exc = std::current_exception();
+                                             elog("Exception while modifying object: ${e} -- object may be corrupted",
+                                                  ("e", e));
+                                          } catch (...) {
+                                             exc = std::current_exception();
+                                             elog("Unknown exception while modifying object");
+                                          }
+                                       }
+                      );
+            if (exc)
+                std::rethrow_exception(exc);
+            FC_ASSERT(ok, "Could not modify object, most likely an index constraint was violated");
          }
 
          virtual void remove( const object& obj )override
@@ -78,6 +95,8 @@ namespace graphene { namespace chain {
 
          virtual const object* find( object_id_type id )const override
          {
+            static_assert(std::is_same<typename MultiIndexType::key_type, object_id_type>::value,
+                          "First index of MultiIndexType MUST be object_id_type!");
             auto itr = _indices.find( id );
             if( itr == _indices.end() ) return nullptr;
             return &*itr;
@@ -117,7 +136,7 @@ namespace graphene { namespace chain {
    struct sparse_index : public generic_index<T, boost::multi_index_container<
       T,
       indexed_by<
-         hashed_unique<
+         ordered_unique<
             tag<by_id>,
             member<object, object_id_type, &object::id>
          >

@@ -32,13 +32,18 @@ if (USE_PCH)
   include (cotire)
 endif(USE_PCH)
 
-list( APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/libraries/fc/CMakeModules" )
+option(USE_PROFILER "Build with GPROF support(Linux)." OFF)
+
+IF( NOT WIN32 )
+  list( APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/libraries/fc/CMakeModules" )
+ENDIF( NOT WIN32 )
 list( APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/libraries/fc/GitVersionGen" )
 include( GetGitRevisionDescription )
 get_git_head_revision( GIT_REFSPEC GIT_SHA2 )
 
 SET(BOOST_COMPONENTS)
 LIST(APPEND BOOST_COMPONENTS thread
+                             iostreams
                              date_time
                              system
                              filesystem
@@ -101,12 +106,6 @@ if( WIN32 )
 
 else( WIN32 ) # Apple AND Linux
 
-    find_library(READLINE_LIBRARIES NAMES readline)
-    find_path(READLINE_INCLUDE_DIR readline/readline.h)
-    #if(NOT READLINE_INCLUDE_DIR OR NOT READLINE_LIBRARIES)
-    #  MESSAGE(FATAL_ERROR "Could not find lib readline.")
-    #endif()
-
     if( APPLE )
         # Apple Specific Options Here
         message( STATUS "Configuring BitShares on OS X" )
@@ -115,6 +114,9 @@ else( WIN32 ) # Apple AND Linux
         # Linux Specific Options Here
         message( STATUS "Configuring BitShares on Linux" )
         set( CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -std=c++11 -Wall" )
+        if(USE_PROFILER)
+            set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pg" )
+        endif( USE_PROFILER )
         set( rt_library rt )
         set( pthread_library pthread)
         if ( NOT DEFINED crypto_library )
@@ -129,6 +131,10 @@ else( WIN32 ) # Apple AND Linux
 
     if( "${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" )
         set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-builtin-memcmp" )
+    elseif( "${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" )
+        if( CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 4.0.0 OR CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 4.0.0 )
+            set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-invalid-partial-specialization" )
+        endif()
     endif()
 
     if( "${CMAKE_GENERATOR}" STREQUAL "Ninja" )
@@ -142,8 +148,6 @@ else( WIN32 ) # Apple AND Linux
     # set( CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -gdwarf-2 -g3" )
 
 endif( WIN32 )
-
-find_package( BerkeleyDB )
 
 set(ENABLE_COVERAGE_TESTING FALSE CACHE BOOL "Build BitShares for code coverage analysis")
 
@@ -204,3 +208,7 @@ endif(LINUX)
 
  include(CPack)
 endif(ENABLE_INSTALLER)
+
+MESSAGE( STATUS "" )
+MESSAGE( STATUS "PROFILER: ${USE_PROFILER}" )
+MESSAGE( STATUS "" )

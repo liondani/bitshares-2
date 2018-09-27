@@ -1,25 +1,27 @@
 /*
  * Copyright (c) 2015 Cryptonomex, Inc., and contributors.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ * The MIT License
  *
- * 1. Any modified source or binaries are used only with the BitShares network.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * 2. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * 3. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 #pragma once
-#include <graphene/chain/evaluator.hpp>
 #include <graphene/chain/global_property_object.hpp>
 #include <graphene/chain/node_property_object.hpp>
 #include <graphene/chain/account_object.hpp>
@@ -27,13 +29,12 @@
 #include <graphene/chain/fork_database.hpp>
 #include <graphene/chain/block_database.hpp>
 #include <graphene/chain/genesis_state.hpp>
+#include <graphene/chain/evaluator.hpp>
 
 #include <graphene/db/object_database.hpp>
 #include <graphene/db/object.hpp>
 #include <graphene/db/simple_index.hpp>
 #include <fc/signals.hpp>
-
-#include <graphene/chain/protocol/protocol.hpp>
 
 #include <fc/log/logger.hpp>
 
@@ -42,6 +43,8 @@
 namespace graphene { namespace chain {
    using graphene::db::abstract_object;
    using graphene::db::object;
+   class op_evaluator;
+   class transaction_evaluation_state;
 
    struct budget_record;
 
@@ -70,7 +73,8 @@ namespace graphene { namespace chain {
             skip_merkle_check           = 1 << 7,  ///< used while reindexing
             skip_assert_evaluation      = 1 << 8,  ///< used while reindexing
             skip_undo_history_check     = 1 << 9,  ///< used while reindexing
-            skip_witness_schedule_check = 1 << 10  ///< used whiel reindexing
+            skip_witness_schedule_check = 1 << 10, ///< used while reindexing
+            skip_validate               = 1 << 11  ///< used prior to checkpoint, skips validate() call on transaction
          };
 
          /**
@@ -83,10 +87,12 @@ namespace graphene { namespace chain {
           *
           * @param data_dir Path to open or create database in
           * @param genesis_loader A callable object which returns the genesis state to initialize new databases on
+          * @param db_version a version string that changes when the internal database format and/or logic is modified
           */
           void open(
              const fc::path& data_dir,
-             std::function<genesis_state_type()> genesis_loader );
+             std::function<genesis_state_type()> genesis_loader,
+             const std::string& db_version );
 
          /**
           * @brief Rebuild object graph from block history and open detabase
@@ -94,7 +100,7 @@ namespace graphene { namespace chain {
           * This method may be called after or instead of @ref database::open, and will rebuild the object graph by
           * replaying blockchain history. When this method exits successfully, the database will be open.
           */
-         void reindex(fc::path data_dir, const genesis_state_type& initial_allocation = genesis_state_type());
+         void reindex(fc::path data_dir);
 
          /**
           * @brief wipe Delete database from disk, and potentially the raw chain as well.
@@ -163,7 +169,7 @@ namespace graphene { namespace chain {
           */
          uint32_t  push_applied_operation( const operation& op );
          void      set_applied_operation_result( uint32_t op_id, const operation_result& r );
-         const vector<operation_history_object>& get_applied_operations()const;
+         const vector<optional< operation_history_object > >& get_applied_operations()const;
 
          string to_pretty_string( const asset& a )const;
 
@@ -187,12 +193,18 @@ namespace graphene { namespace chain {
           *  Emitted After a block has been applied and committed.  The callback
           *  should not yield and should execute quickly.
           */
-         fc::signal<void(const vector<object_id_type>&)> changed_objects;
+         fc::signal<void(const vector<object_id_type>&, const flat_set<account_id_type>&)> new_objects;
+
+         /**
+          *  Emitted After a block has been applied and committed.  The callback
+          *  should not yield and should execute quickly.
+          */
+         fc::signal<void(const vector<object_id_type>&, const flat_set<account_id_type>&)> changed_objects;
 
          /** this signal is emitted any time an object is removed and contains a
           * pointer to the last value of every object that was removed.
           */
-         fc::signal<void(const vector<const object*>&)>  removed_objects;
+         fc::signal<void(const vector<object_id_type>&, const vector<const object*>&, const flat_set<account_id_type>&)>  removed_objects;
 
          //////////////////// db_witness_schedule.cpp ////////////////////
 
@@ -238,11 +250,14 @@ namespace graphene { namespace chain {
 
          const chain_id_type&                   get_chain_id()const;
          const asset_object&                    get_core_asset()const;
+         const asset_dynamic_data_object&       get_core_dynamic_data()const;
          const chain_property_object&           get_chain_properties()const;
          const global_property_object&          get_global_properties()const;
          const dynamic_global_property_object&  get_dynamic_global_properties()const;
          const node_property_object&            get_node_properties()const;
          const fee_schedule&                    current_fee_schedule()const;
+         const account_statistics_object&       get_account_stats_by_owner( account_id_type owner )const;
+         const witness_schedule_object&         get_witness_schedule_object()const;
 
          time_point_sec   head_block_time()const;
          uint32_t         head_block_num()const;
@@ -267,14 +282,6 @@ namespace graphene { namespace chain {
          {
             _operation_evaluators[
                operation::tag<typename EvaluatorType::operation_type>::value].reset( new op_evaluator_impl<EvaluatorType>() );
-         }
-
-         template<typename EvaluatorType>
-         void register_evaluation_observer( evaluation_observer& observer )
-         {
-            unique_ptr<op_evaluator>& op_eval = _operation_evaluators[operation::tag<typename EvaluatorType::operation_type>::value];
-            op_eval->eval_observers.push_back( &observer );
-            return;
          }
 
          //////////////////// db_balance.cpp ////////////////////
@@ -324,13 +331,18 @@ namespace graphene { namespace chain {
          //////////////////// db_debug.cpp ////////////////////
 
          void debug_dump();
+         void apply_debug_updates();
+         void debug_update( const fc::variant_object& update );
 
          //////////////////// db_market.cpp ////////////////////
 
          /// @{ @group Market Helpers
          void globally_settle_asset( const asset_object& bitasset, const price& settle_price );
-         void cancel_order(const force_settlement_object& order, bool create_virtual_op = true);
-         void cancel_order(const limit_order_object& order, bool create_virtual_op = true);
+         void cancel_settle_order(const force_settlement_object& order, bool create_virtual_op = true);
+         void cancel_limit_order(const limit_order_object& order, bool create_virtual_op = true, bool skip_cancel_fee = false);
+         void revive_bitasset( const asset_object& bitasset );
+         void cancel_bid(const collateral_bid_object& bid, bool create_virtual_op = true);
+         void execute_bid( const collateral_bid_object& bid, share_type debt_covered, share_type collateral_from_fund, const price_feed& current_feed );
 
          /**
           * @brief Process a new limit order through the markets
@@ -340,37 +352,43 @@ namespace graphene { namespace chain {
           * This function takes a new limit order, and runs the markets attempting to match it with existing orders
           * already on the books.
           */
+         bool apply_order_before_hardfork_625(const limit_order_object& new_order_object, bool allow_black_swan = true);
          bool apply_order(const limit_order_object& new_order_object, bool allow_black_swan = true);
 
          /**
-          * Matches the two orders,
+          * Matches the two orders, the first parameter is taker, the second is maker.
           *
           * @return a bit field indicating which orders were filled (and thus removed)
           *
           * 0 - no orders were matched
-          * 1 - bid was filled
-          * 2 - ask was filled
+          * 1 - taker was filled
+          * 2 - maker was filled
           * 3 - both were filled
           */
          ///@{
-         template<typename OrderType>
-         int match( const limit_order_object& bid, const OrderType& ask, const price& match_price );
-         int match( const limit_order_object& bid, const limit_order_object& ask, const price& trade_price );
+         int match( const limit_order_object& taker, const limit_order_object& maker, const price& trade_price );
+         int match( const limit_order_object& taker, const call_order_object& maker, const price& trade_price,
+                    const price& feed_price, const uint16_t maintenance_collateral_ratio );
          /// @return the amount of asset settled
          asset match(const call_order_object& call,
                    const force_settlement_object& settle,
                    const price& match_price,
-                   asset max_settlement);
+                   asset max_settlement,
+                   const price& fill_price);
          ///@}
 
          /**
           * @return true if the order was completely filled and thus freed.
           */
-         bool fill_order( const limit_order_object& order, const asset& pays, const asset& receives );
-         bool fill_order( const call_order_object& order, const asset& pays, const asset& receives );
-         bool fill_order( const force_settlement_object& settle, const asset& pays, const asset& receives );
+         bool fill_limit_order( const limit_order_object& order, const asset& pays, const asset& receives, bool cull_if_small,
+                                const price& fill_price, const bool is_maker );
+         bool fill_call_order( const call_order_object& order, const asset& pays, const asset& receives,
+                               const price& fill_price, const bool is_maker );
+         bool fill_settle_order( const force_settlement_object& settle, const asset& pays, const asset& receives,
+                                 const price& fill_price, const bool is_maker );
 
-         bool check_call_orders( const asset_object& mia, bool enable_black_swan = true );
+         bool check_call_orders( const asset_object& mia, bool enable_black_swan = true, bool for_new_limit_order = false,
+                                 const asset_bitasset_data_object* bitasset_ptr = nullptr );
 
          // helpers to fill_order
          void pay_order( const account_object& receiver, const asset& receives, const asset& pays );
@@ -379,7 +397,7 @@ namespace graphene { namespace chain {
          asset pay_market_fees( const asset_object& recv_asset, const asset& receives );
 
 
-         ///@}
+         ///@{
          /**
           *  This method validates transactions without adding it to the pending state.
           *  @return true if the transaction would validate
@@ -394,9 +412,15 @@ namespace graphene { namespace chain {
          /**
           * @}
           */
+
+         /// Enable or disable tracking of votes of standby witnesses and committee members
+         inline void enable_standby_votes_tracking(bool enable)  { _track_standby_votes = enable; }
+
    protected:
          //Mark pop_undo() as protected -- we do not want outside calling pop_undo(); it should call pop_block() instead
          void pop_undo() { object_database::pop_undo(); }
+         void notify_applied_block( const signed_block& block );
+         void notify_on_pending_transaction( const signed_transaction& tx );
          void notify_changed_objects();
 
       private:
@@ -408,12 +432,15 @@ namespace graphene { namespace chain {
 
          //////////////////// db_block.cpp ////////////////////
 
+       public:
+         // these were formerly private, but they have a fairly well-defined API, so let's make them public
          void                  apply_block( const signed_block& next_block, uint32_t skip = skip_nothing );
          processed_transaction apply_transaction( const signed_transaction& trx, uint32_t skip = skip_nothing );
+         operation_result      apply_operation( transaction_evaluation_state& eval_state, const operation& op );
+      private:
          void                  _apply_block( const signed_block& next_block );
          processed_transaction _apply_transaction( const signed_transaction& trx );
-         operation_result      apply_operation( transaction_evaluation_state& eval_state, const operation& op );
-
+         void                  _cancel_bids_and_revive_mpa( const asset_object& bitasset, const asset_bitasset_data_object& bad );
 
          ///Steps involved in applying a new block
          ///@{
@@ -422,17 +449,23 @@ namespace graphene { namespace chain {
          const witness_object& _validate_block_header( const signed_block& next_block )const;
          void create_block_summary(const signed_block& next_block);
 
+         //////////////////// db_witness_schedule.cpp ////////////////////
+
+         uint32_t update_witness_missed_blocks( const signed_block& b );
+
          //////////////////// db_update.cpp ////////////////////
-         void update_global_dynamic_data( const signed_block& b );
+         void update_global_dynamic_data( const signed_block& b, const uint32_t missed_blocks );
          void update_signing_witness(const witness_object& signing_witness, const signed_block& new_block);
          void update_last_irreversible_block();
          void clear_expired_transactions();
          void clear_expired_proposals();
          void clear_expired_orders();
          void update_expired_feeds();
+         void update_core_exchange_rates();
          void update_maintenance_flag( bool new_maintenance_flag );
          void update_withdraw_permissions();
-         bool check_for_blackswan( const asset_object& mia, bool enable_black_swan = true );
+         bool check_for_blackswan( const asset_object& mia, bool enable_black_swan = true,
+                                   const asset_bitasset_data_object* bitasset_ptr = nullptr );
 
          ///Steps performed only at maintenance intervals
          ///@{
@@ -446,9 +479,11 @@ namespace graphene { namespace chain {
          void update_active_witnesses();
          void update_active_committee_members();
          void update_worker_votes();
+         void process_bids( const asset_bitasset_data_object& bad );
+         void process_bitassets();
 
-         template<class... Types>
-         void perform_account_maintenance(std::tuple<Types...> helpers);
+         template<class Type>
+         void perform_account_maintenance( Type tally_helper );
          ///@}
          ///@}
 
@@ -472,7 +507,7 @@ namespace graphene { namespace chain {
           * order they occur and is cleared after the applied_block signal is
           * emited.
           */
-         vector<operation_history_object>  _applied_ops;
+         vector<optional<operation_history_object> >  _applied_ops;
 
          uint32_t                          _current_block_num    = 0;
          uint16_t                          _current_trx_in_block = 0;
@@ -487,6 +522,35 @@ namespace graphene { namespace chain {
          flat_map<uint32_t,block_id_type>  _checkpoints;
 
          node_property_object              _node_property_object;
+
+         /// Whether to update votes of standby witnesses and committee members when performing chain maintenance.
+         /// Set it to true to provide accurate data to API clients, set to false to have better performance.
+         bool                              _track_standby_votes = true;
+
+         /**
+          * Whether database is successfully opened or not.
+          *
+          * The database is considered open when there's no exception
+          * or assertion fail during database::open() method, and
+          * database::close() has not been called, or failed during execution.
+          */
+         bool                              _opened = false;
+
+         // Counts nested proposal updates
+         uint32_t                           _push_proposal_nesting_depth = 0;
+
+         /// Tracks assets affected by bitshares-core issue #453 before hard fork #615 in one block
+         flat_set<asset_id_type>           _issue_453_affected_assets;
+
+         /// Pointers to core asset object and global objects who will have immutable addresses after created
+         ///@{
+         const asset_object*                    _p_core_asset_obj          = nullptr;
+         const asset_dynamic_data_object*       _p_core_dynamic_data_obj   = nullptr;
+         const global_property_object*          _p_global_prop_obj         = nullptr;
+         const dynamic_global_property_object*  _p_dyn_global_prop_obj     = nullptr;
+         const chain_property_object*           _p_chain_property_obj      = nullptr;
+         const witness_schedule_object*         _p_witness_schedule_obj    = nullptr;
+         ///@}
    };
 
    namespace detail

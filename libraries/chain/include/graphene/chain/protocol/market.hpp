@@ -1,25 +1,29 @@
 /*
  * Copyright (c) 2015 Cryptonomex, Inc., and contributors.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ * The MIT License
  *
- * 1. Any modified source or binaries are used only with the BitShares network.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * 2. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * 3. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 #pragma once
 #include <graphene/chain/protocol/base.hpp>
+#include <graphene/chain/protocol/ext.hpp>
 
 namespace graphene { namespace chain { 
 
@@ -91,8 +95,6 @@ namespace graphene { namespace chain {
       void            validate()const;
    };
 
-
-
    /**
     *  @ingroup operations
     *
@@ -107,6 +109,16 @@ namespace graphene { namespace chain {
     */
    struct call_order_update_operation : public base_operation
    {
+      /**
+       * Options to be used in @ref call_order_update_operation.
+       *
+       * @note this struct can be expanded by adding more options in the end.
+       */
+      struct options_type
+      {
+         optional<uint16_t> target_collateral_ratio; ///< maximum CR to maintain when selling collateral on margin call
+      };
+
       /** this is slightly more expensive than limit orders, this pricing impacts prediction markets */
       struct fee_parameters_type { uint64_t fee = 20 * GRAPHENE_BLOCKCHAIN_PRECISION; };
 
@@ -114,6 +126,8 @@ namespace graphene { namespace chain {
       account_id_type     funding_account; ///< pays fee, collateral, and cover
       asset               delta_collateral; ///< the amount of collateral to add to the margin position
       asset               delta_debt; ///< the amount of the debt to be paid off, may be negative to issue new debt
+
+      typedef extension<options_type> extensions_type; // note: this will be jsonified to {...} but no longer [...]
       extensions_type     extensions;
 
       account_id_type fee_payer()const { return funding_account; }
@@ -132,15 +146,16 @@ namespace graphene { namespace chain {
       struct fee_parameters_type {};
 
       fill_order_operation(){}
-      fill_order_operation( object_id_type o, account_id_type a, asset p, asset r, asset f )
-         :order_id(o),account_id(a),pays(p),receives(r),fee(f){}
+      fill_order_operation( object_id_type o, account_id_type a, asset p, asset r, asset f, price fp, bool m )
+         :order_id(o),account_id(a),pays(p),receives(r),fee(f),fill_price(fp),is_maker(m) {}
 
       object_id_type      order_id;
       account_id_type     account_id;
       asset               pays;
       asset               receives;
       asset               fee; // paid by receiving account
-
+      price               fill_price;
+      bool                is_maker;
 
       pair<asset_id_type,asset_id_type> get_market()const
       {
@@ -155,16 +170,68 @@ namespace graphene { namespace chain {
       share_type      calculate_fee(const fee_parameters_type& k)const { return 0; }
    };
 
+   /**
+    *  @ingroup operations
+    *
+    *  This operation can be used after a black swan to bid collateral for
+    *  taking over part of the debt and the settlement_fund (see BSIP-0018).
+    */
+   struct bid_collateral_operation : public base_operation
+   {
+      /** should be equivalent to call_order_update fee */
+      struct fee_parameters_type { uint64_t fee = 20 * GRAPHENE_BLOCKCHAIN_PRECISION; };
+
+      asset               fee;
+      account_id_type     bidder; ///< pays fee and additional collateral
+      asset               additional_collateral; ///< the amount of collateral to bid for the debt
+      asset               debt_covered; ///< the amount of debt to take over
+      extensions_type     extensions;
+
+      account_id_type fee_payer()const { return bidder; }
+      void            validate()const;
+   };
+
+   /**
+    * @ingroup operations
+    *
+    * @note This is a virtual operation that is created while reviving a
+    * bitasset from collateral bids.
+    */
+   struct execute_bid_operation : public base_operation
+   {
+      struct fee_parameters_type {};
+
+      execute_bid_operation(){}
+      execute_bid_operation( account_id_type a, asset d, asset c )
+         : bidder(a), debt(d), collateral(c) {}
+
+      account_id_type     bidder;
+      asset               debt;
+      asset               collateral;
+      asset               fee;
+
+      account_id_type fee_payer()const { return bidder; }
+      void            validate()const { FC_ASSERT( !"virtual operation" ); }
+
+      /// This is a virtual operation; there is no fee
+      share_type      calculate_fee(const fee_parameters_type& k)const { return 0; }
+   };
 } } // graphene::chain
 
 FC_REFLECT( graphene::chain::limit_order_create_operation::fee_parameters_type, (fee) )
 FC_REFLECT( graphene::chain::limit_order_cancel_operation::fee_parameters_type, (fee) )
 FC_REFLECT( graphene::chain::call_order_update_operation::fee_parameters_type, (fee) )
-/// THIS IS THE ONLY VIRTUAL OPERATION THUS FAR... 
-FC_REFLECT( graphene::chain::fill_order_operation::fee_parameters_type,  )
+FC_REFLECT( graphene::chain::bid_collateral_operation::fee_parameters_type, (fee) )
+FC_REFLECT( graphene::chain::fill_order_operation::fee_parameters_type,  ) // VIRTUAL
+FC_REFLECT( graphene::chain::execute_bid_operation::fee_parameters_type,  ) // VIRTUAL
 
+FC_REFLECT( graphene::chain::call_order_update_operation::options_type, (target_collateral_ratio) )
+
+FC_REFLECT_TYPENAME( graphene::chain::call_order_update_operation::extensions_type )
 
 FC_REFLECT( graphene::chain::limit_order_create_operation,(fee)(seller)(amount_to_sell)(min_to_receive)(expiration)(fill_or_kill)(extensions))
 FC_REFLECT( graphene::chain::limit_order_cancel_operation,(fee)(fee_paying_account)(order)(extensions) )
 FC_REFLECT( graphene::chain::call_order_update_operation, (fee)(funding_account)(delta_collateral)(delta_debt)(extensions) )
-FC_REFLECT( graphene::chain::fill_order_operation, (fee)(order_id)(account_id)(pays)(receives) )
+FC_REFLECT( graphene::chain::fill_order_operation, (fee)(order_id)(account_id)(pays)(receives)(fill_price)(is_maker) )
+FC_REFLECT( graphene::chain::bid_collateral_operation, (fee)(bidder)(additional_collateral)(debt_covered)(extensions) )
+FC_REFLECT( graphene::chain::execute_bid_operation, (fee)(bidder)(debt)(collateral) )
